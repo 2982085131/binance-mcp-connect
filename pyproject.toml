@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binance-mcp-connect"
+version = "0.1.0"
+description = "Connect to Binance's Agentic MCP server by reusing the official Codex CLI OAuth token"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "quant research" }]
+dependencies = [
+  "requests>=2.31",
+  "pyrage>=1.2",
+]
+
+[project.optional-dependencies]
+keyring = ["keyring>=24"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+binance-mcp = "binance_mcp_connect.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["binance_mcp_connect*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
