@@ -6,6 +6,7 @@ notional before anything is sent.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 
 from binance_mcp_connect import (
@@ -16,6 +17,33 @@ from binance_mcp_connect import (
     round_qty,
     validate,
 )
+
+
+def place_and_cancel(client, order: Order, symbol: str, wait_seconds: float = 2.0) -> int:
+    """Place, query, then always attempt to cancel. Returns a process exit code."""
+    placed = client.call("futures_usds.newOrder", order.params())
+    print("placed:", placed)
+    order_id = placed.get("orderId")
+    if not order_id:
+        print("no orderId in the response; not confirmed, check the exchange UI",
+              file=sys.stderr)
+        return 1
+    try:
+        time.sleep(wait_seconds)
+        print("status:", client.call("futures_usds.queryOrder",
+                                     {"symbol": symbol, "orderId": order_id}))
+    except Exception as exc:  # noqa: BLE001
+        print(f"query failed for order {order_id}: {exc}; will try to cancel",
+              file=sys.stderr)
+    finally:
+        try:
+            print("cancel:", client.call("futures_usds.cancelOrder",
+                                         {"symbol": symbol, "orderId": order_id}))
+        except Exception as exc:  # noqa: BLE001
+            print(f"CANCEL FAILED for order {order_id}: {exc}. "
+                  "The order may still be live; cancel it manually.", file=sys.stderr)
+            return 2
+    return 0
 
 
 def main() -> int:
@@ -46,17 +74,7 @@ def main() -> int:
     if not args.execute:
         print("dry run; pass --execute to send")
         return 0
-
-    placed = client.call("futures_usds.newOrder", order.params())
-    print("placed:", placed)
-    order_id = placed.get("orderId")
-    time.sleep(2)
-    if order_id:
-        print("status:", client.call("futures_usds.queryOrder",
-                                     {"symbol": args.symbol, "orderId": order_id}))
-        print("cancel:", client.call("futures_usds.cancelOrder",
-                                     {"symbol": args.symbol, "orderId": order_id}))
-    return 0
+    return place_and_cancel(client, order, args.symbol)
 
 
 if __name__ == "__main__":

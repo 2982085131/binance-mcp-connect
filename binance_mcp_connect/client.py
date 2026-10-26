@@ -12,34 +12,54 @@ import requests
 
 DEFAULT_ENDPOINT = "https://agent.binance.com/mcp/agentic"
 PROTOCOL_VERSION = "2025-06-18"
+MAX_PAGES = 50
 
 
 class BinanceMCPError(RuntimeError):
-    """Raised when the MCP server returns a JSON-RPC error."""
+    """Raised when the MCP server returns a JSON-RPC error or an invalid response."""
 
 
 class BinanceMCPAuthError(BinanceMCPError):
     """Raised on 401/403 from the MCP endpoint (expired or invalid token)."""
 
 
-def parse_body(text: str) -> dict:
-    """Parse either a JSON body or an SSE stream into a JSON-RPC message."""
+def parse_messages(text: str) -> list[dict]:
+    """Parse a JSON body or an SSE stream into a list of JSON-RPC messages.
+
+    SSE allows one event to span multiple ``data:`` lines; they must be joined
+    with newlines before JSON parsing (WHATWG event-stream rules).
+    """
     text = text.strip()
     if not text:
-        return {}
+        return []
     if text.startswith("{"):
-        return json.loads(text)
-    # SSE: events look like "event: message\ndata: {...}\n\n"
-    last: dict = {}
+        return [json.loads(text)]
+    messages: list[dict] = []
+    data: list[str] = []
     for line in text.splitlines():
         if line.startswith("data:"):
-            chunk = line[5:].strip()
-            if chunk:
-                try:
-                    last = json.loads(chunk)
-                except json.JSONDecodeError:
-                    continue
-    return last
+            data.append(line[5:].lstrip())
+        elif line.strip() == "" and data:
+            payload = "\n".join(data)
+            data = []
+            try:
+                messages.append(json.loads(payload))
+            except json.JSONDecodeError:
+                continue
+    if data:
+        try:
+            messages.append(json.loads("\n".join(data)))
+        except json.JSONDecodeError:
+            pass
+    return messages
+
+
+def parse_body(text: str) -> dict:
+    """Backward-compatible single-message parser (returns the first message)."""
+    messages = parse_messages(text)
+    if not messages:
+        raise BinanceMCPError("response contained no JSON-RPC message")
+    return messages[0]
 
 
 class BinanceMCPClient:
@@ -51,9 +71,11 @@ class BinanceMCPClient:
         self.timeout = timeout
         self.session_id: str | None = None
         self.server_info: dict | None = None
+        self._initialized = False
+        self._next_id = 0
 
     # ------------------------------------------------------------------ transport
-    def _post(self, payload: dict, notify: bool = False) -> dict:
+    def _post(self, payload: dict) -> str:
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
@@ -73,18 +95,31 @@ class BinanceMCPClient:
         sid = resp.headers.get("Mcp-Session-Id")
         if sid:
             self.session_id = sid
-        return parse_body(resp.text)
+        return resp.text
 
     def _rpc(self, method: str, params: dict | None = None, notify: bool = False) -> dict:
         payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        request_id = None
         if not notify:
-            payload["id"] = 1
+            self._next_id += 1
+            request_id = self._next_id
+            payload["id"] = request_id
         if params is not None:
             payload["params"] = params
-        msg = self._post(payload, notify=notify)
+        text = self._post(payload)
+        messages = parse_messages(text)
+        if notify and not messages:
+            return {}
+        if not messages:
+            raise BinanceMCPError(f"{method}: empty response")
+        matching = [m for m in messages if request_id is not None and m.get("id") == request_id]
+        msg = matching[-1] if matching else messages[-1]
         if "error" in msg:
             err = msg["error"]
             raise BinanceMCPError(f"{err.get('code')}: {err.get('message')}")
+        if "result" not in msg and not notify:
+            raise BinanceMCPError(
+                f"{method}: response has neither result nor error (id={msg.get('id')})")
         return msg
 
     # ------------------------------------------------------------------ MCP methods
@@ -95,21 +130,39 @@ class BinanceMCPClient:
             "clientInfo": {"name": "binance-mcp-connect", "version": "0.1"},
         })
         self.server_info = msg.get("result", {}).get("serverInfo", {})
+        self._initialized = True
         try:
             self._rpc("notifications/initialized", {}, notify=True)
         except Exception:  # noqa: BLE001 - optional notification
             pass
         return self.server_info
 
-    def list_tools(self) -> list[dict]:
-        if not self.session_id:
+    def _ensure_initialized(self) -> None:
+        if not self._initialized:
             self.initialize()
-        msg = self._rpc("tools/list", {})
-        return msg.get("result", {}).get("tools", [])
+
+    def list_tools(self) -> list[dict]:
+        self._ensure_initialized()
+        tools: list[dict] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        for _ in range(MAX_PAGES):
+            params = {} if cursor is None else {"cursor": cursor}
+            msg = self._rpc("tools/list", params)
+            result = msg.get("result") or {}
+            tools.extend(result.get("tools", []))
+            cursor = result.get("nextCursor")
+            if not cursor:
+                break
+            if cursor in seen:
+                raise BinanceMCPError(f"tools/list pagination loop detected at cursor {cursor!r}")
+            seen.add(cursor)
+        else:
+            raise BinanceMCPError(f"tools/list exceeded {MAX_PAGES} pages")
+        return tools
 
     def call(self, name: str, arguments: dict | None = None) -> Any:
-        if not self.session_id:
-            self.initialize()
+        self._ensure_initialized()
         msg = self._rpc("tools/call", {"name": name, "arguments": arguments or {}})
         result = msg.get("result", {})
         if result.get("isError"):

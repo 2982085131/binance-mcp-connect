@@ -19,6 +19,11 @@ from pathlib import Path
 
 KEYRING_SERVICE = "codex"
 SECRETS_FILE = "mcp_oauth.age"
+BINANCE_MCP_URL = "https://agent.binance.com/mcp/agentic"
+
+
+def _norm_url(url: str | None) -> str:
+    return (url or "").strip().rstrip("/").lower()
 
 
 class CodexCredentialsError(RuntimeError):
@@ -126,9 +131,16 @@ def decrypt_age(path: Path, passphrase: str) -> bytes:
     return age_passphrase.decrypt(ciphertext, passphrase)
 
 
-def extract_token(decrypted: bytes) -> dict:
+def extract_token(decrypted: bytes, expected_server: str = "binance",
+                  expected_url: str = BINANCE_MCP_URL) -> dict:
+    """Pick the token bound to Binance, never "the first token we find".
+
+    Codex can hold credentials for several MCP servers. Sending the wrong
+    bearer token to Binance would leak another service's credential.
+    """
     payload = json.loads(decrypted)
     secrets = payload.get("secrets", {})
+    candidates: list[dict] = []
     for value in secrets.values():
         try:
             inner = json.loads(value)
@@ -136,15 +148,32 @@ def extract_token(decrypted: bytes) -> dict:
             continue
         token = inner.get("token_response") or {}
         if token.get("access_token"):
-            return {
+            candidates.append({
                 "access_token": token["access_token"],
                 "token_type": token.get("token_type", "Bearer"),
                 "expires_at": inner.get("expires_at"),
                 "server_name": inner.get("server_name"),
                 "url": inner.get("url"),
                 "client_id": inner.get("client_id"),
-            }
-    raise CodexCredentialsError("no access_token found in the decrypted secrets file")
+            })
+    if not candidates:
+        raise CodexCredentialsError("no access_token found in the decrypted secrets file")
+
+    target_url = _norm_url(expected_url)
+    matched = [
+        c for c in candidates
+        if c.get("server_name") == expected_server or _norm_url(c.get("url")) == target_url
+    ]
+    if len(matched) == 1:
+        return matched[0]
+    if not matched:
+        found = sorted({f"{c.get('server_name')} ({c.get('url')})" for c in candidates})
+        raise CodexCredentialsError(
+            f"no credential for server '{expected_server}' at {expected_url}; "
+            f"found: {found}")
+    raise CodexCredentialsError(
+        f"multiple credentials match '{expected_server}'; refusing to guess: "
+        f"{[c.get('url') for c in matched]}")
 
 
 def get_codex_token(home: Path | None = None) -> dict:

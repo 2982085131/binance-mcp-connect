@@ -1,5 +1,11 @@
 """Public API for binance-mcp-connect."""
-from .client import BinanceMCPAuthError, BinanceMCPClient, BinanceMCPError, parse_body
+from .client import (
+    BinanceMCPAuthError,
+    BinanceMCPClient,
+    BinanceMCPError,
+    parse_body,
+    parse_messages,
+)
 from .codex_creds import (
     CodexCredentialsError,
     decrypt_age,
@@ -26,6 +32,7 @@ __all__ = [
     "BinanceMCPError",
     "BinanceMCPAuthError",
     "parse_body",
+    "parse_messages",
     "CodexCredentialsError",
     "get_codex_token",
     "get_codex_token_from_file",
@@ -44,4 +51,4 @@ __all__ = [
     "close_params",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

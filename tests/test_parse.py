@@ -1,4 +1,5 @@
-from binance_mcp_connect import keyring_account, parse_body
+from binance_mcp_connect import BinanceMCPError, keyring_account, parse_body
+import pytest
 
 
 def test_parse_json():
@@ -10,8 +11,10 @@ def test_parse_sse():
     assert parse_body(body)["result"]["tools"] == []
 
 
-def test_parse_empty():
-    assert parse_body("") == {}
+def test_parse_empty_raises():
+    # An empty body must not be silently treated as success.
+    with pytest.raises(BinanceMCPError):
+        parse_body("")
 
 
 def test_keyring_account_windows_verbatim():

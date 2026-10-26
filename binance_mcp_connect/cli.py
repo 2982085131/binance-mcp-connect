@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -44,8 +45,13 @@ def cmd_token(args) -> int:
     if args.out:
         from pathlib import Path
 
-        Path(args.out).write_text(json.dumps(out, indent=2), encoding="utf-8")
-        print(f"saved to {args.out} (keep it private, chmod 600)")
+        path = Path(args.out)
+        path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)  # best effort; Windows ACLs are separate
+        except OSError:
+            pass
+        print(f"saved to {args.out} (keep it private)")
     print(json.dumps({**out, "access_token": _mask(out["access_token"])}, indent=2))
     return 0
 
@@ -70,15 +76,21 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _first_line(text: str | None, limit: int = 90) -> str:
+    if not text:
+        return ""
+    lines = text.splitlines()
+    return lines[0][:limit] if lines else ""
+
+
 def cmd_tools(args) -> int:
     client, _ = _client(args)
     tools = client.list_tools()
     if args.json:
-        print(json.dumps(tools, indent=2)[:8000])
+        print(json.dumps(tools, indent=2, ensure_ascii=False))
         return 0
     for t in tools:
-        desc = (t.get("description") or "").splitlines()[0][:90]
-        print(f"{t.get('name'):55s} {desc}")
+        print(f"{t.get('name'):55s} {_first_line(t.get('description'))}")
     print(f"\n{len(tools)} tools")
     return 0
 
@@ -91,7 +103,7 @@ def cmd_call(args) -> int:
         print(f"invalid --args JSON: {exc}", file=sys.stderr)
         return 2
     result = client.call(args.name, args_json)
-    print(json.dumps(result, ensure_ascii=False, indent=2)[:6000])
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
